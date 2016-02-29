@@ -1,0 +1,230 @@
+---
+title: "Weight Lifting Exercises Dataset"
+author: "Shaddy"
+date: "February 27, 2016"
+output: html_document
+---
+#Weight Lifting Exercises Prediction Model
+
+##Background
+Using devices such as Jawbone Up, Nike FuelBand, and Fitbit it is now possible to collect a large amount of data about personal activity relatively inexpensively. These type of devices are part of the quantified self movement - a group of enthusiasts who take measurements about themselves regularly to improve their health, to find patterns in their behavior, or because they are tech geeks. One thing that people regularly do is quantify how much of a particular activity they do, but they rarely quantify how well they do it. In this project, your goal will be to use data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants. They were asked to perform barbell lifts correctly and incorrectly in 5 different ways.
+
+Six young health participants were asked to perform one set of 10 repetitions of the Unilateral Dumbbell Biceps Curl in five different fashions: exactly according to the specification (Class A), throwing the elbows to the front (Class B), lifting the dumbbell only halfway (Class C), lowering the dumbbell only halfway (Class D) and throwing the hips to the front (Class E). Only the class A excercise was performed correctly.
+
+##Objective
+The goal of this project is to create a model to accurately predict the type of excercise a participant does based on the variables given. The steps to build the model will be described in detail, as well as how cross validation was used to refine the model. The out of sample error will also be used to increase our confidence in the model.
+
+###Loading and preprocessing the raw data
+Given the nature of the raw data, many of the variables must be excluded due to relevance, NAs, and factor variables which impede model selection. Out of the 160 variables given, only 52 were usable.
+
+```{r loading data, echo=FALSE, results='hide', include= FALSE, cache=TRUE}
+#Running in Parallel
+library(doSNOW)
+cl <- makeCluster(8)
+registerDoSNOW(cl)
+
+#Loading data
+setwd("C:/Users/Mahdi/Documents/courseraR/Prediction/")
+#download.file("https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv", destfile = "training.csv")
+#download.file("https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv", destfile = "testing.csv")
+
+AllDATA<-read.csv("training.csv")
+
+classes<-sapply(AllDATA, class)
+
+#colClasses are an issue
+TwentyQ<-read.csv("testing.csv", colClasses = "character")
+
+#some values needed post-processing
+stored<-factor(TwentyQ$user_name)
+stored2<-factor(TwentyQ$cvtd_timestamp)
+stored3<-AllDATA$classe
+
+blanky<-cbind(1:20)
+for (i in 1:length(classes)){
+  if (classes[i]=="factor"){
+    blanky<-cbind(blanky, factor(TwentyQ[,i]))
+  }
+  else{
+    blanky<-cbind(blanky, as(TwentyQ[,i], classes[i]))
+  }
+}
+blanky<-blanky[,-1]
+colnames(blanky)<-names(TwentyQ)
+TwentyQ<-data.frame(blanky)
+TwentyQ$user_name<-stored
+TwentyQ$cvtd_timestamp<-stored2
+TwentyQ$classe=factor(rep("dummy",20 )) #sets up a dummy variable
+
+#Preprocessing
+
+set.seed(666)
+#First few columns don't matter
+Kill1<-c(1:7)
+AllDATA<-AllDATA[,-Kill1]
+TwentyQ<-TwentyQ[,-Kill1]
+
+#Getting rid of Factor columns
+Kill2<-sapply(AllDATA, class)=="factor"
+
+AllDATA<-AllDATA[,-dim(AllDATA)[2]][,!Kill2]
+TwentyQ<-TwentyQ[,!Kill2]
+TwentyQ<-TwentyQ[,-dim(TwentyQ)[2]]
+
+#Riding of NA columns
+Kill3<-is.na(colSums(AllDATA))
+AllDATA<-AllDATA[,!Kill3]
+TwentyQ<-TwentyQ[,!Kill3]
+
+AllDATA$classe<-stored3
+
+
+library(caret)
+
+
+#Creating data objects
+INDX<-createDataPartition(AllDATA$classe, p=.50)[[1]] #divide into validation set based on the "classe" variable
+training<-AllDATA[INDX,]
+
+validation<-AllDATA[-INDX,]
+library(rattle) #for fancy plotting
+
+
+```
+
+##Exploratory Model (Model#1): Regression Tree
+Since the outcome is a classification, a CART model is a good starting point for looking at important features of the data.
+
+***
+
+```{r Model1, echo=FALSE, include=FALSE, cache=TRUE}
+#Exploratory CART Model, good first step in separating important variables. 
+#Regression tree
+RegTreeMod<-train(classe~., data=training, method="rpart")
+
+```
+```{r Model1_cont1, echo=FALSE, cache=TRUE}
+
+fancyRpartPlot(RegTreeMod$finalModel, sub = "Dendrogram of CART Model")
+
+#Issue is the model does not include D!
+
+#Very poor accuracy!
+confusionMatrix(predict(RegTreeMod, training), training$classe)$overall[c(1,3,4)]
+#<50%
+
+```
+
+Along with a paltry accuracy of ~50% on the training set, the CART model also fails to include a way to classify "Class D!". However, despite its lacking features, the model is still informative; The "roll_belt" and "pitch_forearm" variables seem like and important distinction between Classes E and A, and the classes. 
+
+***
+
+##Model #2: Linear Discriminant Analysis
+By looking at classification by assuming Gaussian clumping, we use linear discriminant analysis to hopefully make better classification predictions. 
+
+***
+
+```{r Model2, echo=FALSE, include=FALSE, cache=TRUE}
+modlda<-train(classe~., method="lda", data=training)
+```
+```{r MOdel2_cont1, echo=FALSE, cache=TRUE}
+confusionMatrix( predict(modlda, training), training$classe)$overall[c(1,3,4)]
+```
+By predicting on the training data, we see a better fit than with the Regression Tree. Also, we finally see all classes have a way of being classified.
+
+***
+
+```{r Model2_cont2, echo=FALSE, cache=TRUE}
+confusionMatrix( predict(modlda, validation), validation$classe)$overall[c(1,3,4)]
+```
+The validation set, however, shows a decent, but still low ~70% accuracy. 
+
+***
+
+
+##Model#3: Random Forest
+
+By taking the classification tree model even further, we can greatly increase model accuracy. Also, as one of the best predictive models, Random Forests are a big step towards a final model. Cross-validation will be used to improve performance
+
+***
+
+``` {r Model3, echo=FALSE,include=FALSE, cache=TRUE}
+RandTreeMod<-train(classe~., data=training, method="rf", trControl=trainControl(method="cv")) #helps speed up selection
+```
+
+***
+
+```{r Model3_cont1, echo=FALSE, cache=TRUE}
+#This model does include all classes
+#Much more accurate!
+confusionMatrix(predict(RandTreeMod, training), training$classe)$overall[c(1,3,4)]
+```
+The accuracy on the training set looks very good, but we might be overfitting. We can use a validation set to help verify the model's true accuracy.
+
+***
+
+```{r Model3_cont2, echo=FALSE, cache=TRUE}
+confusionMatrix(predict(RandTreeMod, validation), validation$classe)$overall[c(1,3,4)]
+```
+
+Indeed, the validation set shows an amazing >95% accuracy. As one of the most competative models, Random forests are often seen competing with Boosted models. Perhaps a boosted model will yeild even better results on the validation set. 
+
+***
+
+##Model#4: Boosted Model
+By taking weak predictors, and combining them, we can form a stronger model. Boosting is one of the strongest models to-date.
+
+```{r Model4, echo=FALSE, include=FALSE, cache=TRUE}
+
+#Boosting
+BoostMod<-train(classe~., data=training, method="gbm", verbose=FALSE) 
+```
+
+***
+
+```{r Model4_cont1, echo=FALSE, cache=TRUE}
+confusionMatrix(predict(BoostMod, training), training$classe)$overall[c(1,3,4)]
+```
+The boosted model looks great on the training set, though still slightly weaker than the Random Forest.
+
+
+***
+
+```{r Model4_cont2,echo=FALSE, cache=TRUE }
+confusionMatrix(predict(BoostMod, validation), validation$classe)$overall[c(1,3,4)]
+
+#Very good accuracy!
+
+
+#Try combining models!
+
+```
+
+Using the validation set, we can confirm that although the boosted model is excellent, our data is better predicted with the Random Forest.
+
+***
+
+##Final Model: Random Forest
+As the best performing model, the Random Forest will be used to predict on the test set. We can observe some important features of the data.
+
+```{r Model3_cont3, echo=FALSE, cache=TRUE}
+
+#USE varImpPlot(modelFit)
+inx<-order(varImp(RandTreeMod$finalModel), decreasing = TRUE)
+x<-row.names(varImp(RandTreeMod$finalModel))[inx]
+y<-varImp(RandTreeMod$finalModel)[inx,]
+z<-data.frame(y[1:5], row.names=x[1:5])
+colnames(z)<-"Gini Decrease"
+varImpPlot(RandTreeMod$finalModel, main = "Variable importance for Random Forest Model")
+
+stopCluster(cl) #end parallel use
+
+```
+
+Among the most important variables, we see our previous observations are verified; "roll_belt" and "pitch_forearm" are indeed one of the most important variables in distinguishing betwee classes.
+
+***
+
+#Reference
+Velloso, E.; Bulling, A.; Gellersen, H.; Ugulino, W.; Fuks, H. Qualitative Activity Recognition of Weight Lifting Exercises. Proceedings of 4th International Conference in Cooperation with SIGCHI (Augmented Human '13) . Stuttgart, Germany: ACM SIGCHI, 2013.
+
